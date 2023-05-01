@@ -1,0 +1,145 @@
+---
+title: "Diagnostics"
+author: "Martin Řanda"
+format:
+  html:
+    toc: true
+    toc-location: left
+    toc-depth: 4
+    theme: flatly
+    highlight-style: oblivion
+    code-fold: true
+self-contained: true
+engine: knitr
+---
+
+```
+## Author: Martin Řanda
+## Year: 2023
+##
+## R Version 4.2.2
+##
+## forecast 8.21 
+## xts 0.13.0 
+## zoo 1.8.11 
+## dplyr 1.1.0 
+## librarian 1.8.1 
+```
+
+## Setup
+
+Load packages and setup
+
+```{r}
+if (!require(librarian)) install.packages("librarian")
+librarian::shelf(dplyr, xts, forecast)
+for (pkg in check_attached()) cat(paste(pkg, packageVersion(pkg), "\n"))
+# Set timezone to CET, locale to English, and working directory to filepath
+Sys.setenv(TZ = "CET")
+Sys.setlocale("LC_TIME", "English")
+```
+
+Load all in-sample fits
+
+```{r}
+nn1_fit <- readRDS("results/insample/nn1_fit.rds")
+nn48_fit <- readRDS("results/insample/nn48_fit.rds")
+sarimax101_fit <- readRDS("results/insample/sarimax101_fit.rds")
+sarimax202_fit <- readRDS("results/insample/sarimax202_fit.rds")
+trees_fit <- readRDS("results/insample/trees_fit.rds")
+
+# Create residuals
+nn1_fit$resid <- with(nn1_fit, load_mw - fit)
+nn48_fit$resid <- with(nn48_fit, load_mw - fit)
+sarimax101_fit$resid <- with(sarimax101_fit, load_mw - fit)
+sarimax202_fit$resid <- with(sarimax202_fit, load_mw - fit)
+trees_fit$resid <- with(trees_fit, load_mw - fit)
+
+fit_list <- list(
+  nn1_fit,
+  nn48_fit,
+  sarimax101_fit,
+  sarimax202_fit,
+  trees_fit
+)
+names(fit_list) <- c("nn1_fit", "nn48_fit", "sarimax101_fit", "sarimax202_fit", "trees_fit")
+```
+
+Imported data may have different dimensions due to the in-sample set being different in most cases
+
+```{r}
+sapply(fit_list, dim)
+```
+
+## Diagnostics
+
+```{r}
+lags <- 1:7
+
+boxtests <- vector("list", length = length(names(fit_list)))
+names(boxtests) <- names(fit_list)
+archtests <- vector("list", length = length(names(fit_list)))
+names(archtests) <- names(fit_list)
+jbtests <- vector("list", length = length(names(fit_list)))
+names(jbtests) <- names(fit_list)
+
+
+for (n in names(fit_list)) {
+  j <- 0
+  box <- rep(NA, length(lags))
+  arch <- rep(NA, length(lags))
+  for (l in lags) {
+    j <- j + 1
+    cat("\n", l, "lag", n)
+    box[j] <- Box.test(fit_list[[n]]$resid, lag = l, type = "Ljung-Box")$p.value
+    cat("\nLB statistic", Box.test(fit_list[[n]]$resid, lag = l, type = "Ljung-Box")$statistic)
+    arch[j] <- Box.test(fit_list[[n]]$resid^2, lag = l, type = "Box-Pierce")$p.value
+    cat("\nARCH statistic", Box.test(fit_list[[n]]$resid^2, lag = l, type = "Box-Pierce")$statistic)
+    jbtest <- JarqueBeraTest(fit_list[[n]]$resid)$p.value
+  }
+  boxtests[[n]] <- box
+  archtests[[n]] <- arch
+  jbtests[[n]] <- jbtest
+}
+```
+
+```{r}
+boxtests
+```
+
+
+```{r}
+archtests
+```
+
+
+```{r}
+jbtests
+```
+
+
+
+```{r}
+par(mfrow = c(2, 3))
+for (n in names(fit_list)) {
+  plot(Acf(fit_list[[n]]$resid, plot = F), main = n)
+}
+```
+
+
+```{r}
+par(mfrow = c(2, 3))
+for (n in names(fit_list)) {
+  h <- hist(fit_list[[n]]$resid, breaks = 100, main = n, freq = F, col = "white")
+  x <- seq(min(fit_list[[n]]$resid), max(fit_list[[n]]$resid), length = 1000)
+  y <- dnorm(x, mean = mean(fit_list[[n]]$resid), sd = sd(fit_list[[n]]$resid))
+  lines(x, y, col = "purple", lwd = 2)
+}
+
+par(mfrow = c(2, 3))
+for (n in names(fit_list)) {
+  qqnorm(fit_list[[n]]$resid, main = n)
+  qqline(fit_list[[n]]$resid)
+}
+```
+

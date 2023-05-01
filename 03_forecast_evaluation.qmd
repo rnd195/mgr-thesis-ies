@@ -1,0 +1,627 @@
+---
+title: "Forecast Evaluation"
+author: "Martin Řanda"
+format:
+  html:
+    toc: true
+    toc-location: left
+    toc-depth: 4
+    theme: flatly
+    highlight-style: oblivion
+    code-fold: true
+self-contained: true
+engine: knitr
+---
+
+```
+## Author: Martin Řanda
+## Year: 2023
+##
+## R Version 4.2.2
+##
+## tsutils 0.9.3 
+## ggsci 3.0.0 
+## ggplot2 3.4.1 
+## tidyr 1.3.0 
+## lubridate 1.9.2 
+## DescTools 0.99.48 
+## forecast 8.21 
+## xts 0.13.0 
+## zoo 1.8.11 
+## dplyr 1.1.0 
+## librarian 1.8.1 
+```
+
+## Setup
+
+Load packages and setup
+
+```{r}
+if (!require(librarian)) install.packages("librarian")
+librarian::shelf(dplyr, xts, DescTools, lubridate, tidyr, ggplot2, ggsci, forecast, tsutils)
+for (pkg in check_attached()) cat(paste(pkg, packageVersion(pkg), "\n"))
+# Set timezone to CET, locale to English, and working directory to filepath
+Sys.setenv(TZ = "CET")
+Sys.setlocale("LC_TIME", "English")
+```
+
+Load all forecasts and relevant data
+
+```{r}
+ofic <- readRDS("data/series_features_1h_2012_2021_v2.rds")["20210101/20211230", c("load_mw", "load_mw_f")]
+working_days <- readRDS("data/seasonal_dummies_3.rds")["20210101/20211230", "wknd_or_h"]
+colnames(ofic) <- c("load_mw", "ofic")
+nn1 <- readRDS("data/all_forecasts_1_nn.rds")["20210101/20211230"]
+nn48 <- readRDS("data/all_forecasts_48_nn.rds")["20210101/20211230"]
+# 2 forecasts were duplicated due to time change
+nn48 <- nn48[!duplicated(index(nn48)), ]
+sarimax1 <- readRDS("data/all_forecasts_1_s.rds")["20210101/20211230"]
+sarimax48 <- readRDS("data/all_forecasts_48_s.rds")["20210101/20211230"]
+trees1 <- readRDS("data/all_forecasts_1_tree.rds")["20210101/20211230"]
+snaive48 <- readRDS("data/all_forecasts_48_snaive.rds")["20210101/20211230"]
+rw1 <- readRDS("data/series_features_1h_2012_2021_v2.rds")["20201231T230000/20211230T220000", "load_mw"]
+index(rw1) <- index(ofic)
+colnames(rw1) <- "rw"
+```
+
+Check dimensions of all imported data. The number of rows (first value) needs to be the same for all.
+
+```{r}
+dim(ofic)
+dim(nn1)
+dim(nn48)
+dim(sarimax1)
+dim(sarimax48)
+dim(trees1)
+dim(snaive48)
+dim(rw1)
+```
+
+Connect to two objects (48h and 1h)
+
+```{r}
+preds_1h <- ofic[, "load_mw"] %>%
+  merge(nn1[, "nn"]) %>%
+  merge(sarimax1) %>%
+  merge(trees1) %>%
+  merge(rw1)
+head(preds_1h)
+
+preds_48h <- ofic %>%
+  merge(nn48[, "nn"]) %>%
+  merge(sarimax48) %>%
+  merge(snaive48)
+head(preds_48h)
+```
+
+## One-hour-ahead analysis
+
+Create NN / SARIMAX hybrid
+
+```{r}
+preds_1h$nn_sarimax <- with(preds_1h, (nn + sarimax) * 0.5)
+```
+
+
+### Total errors
+
+```{r}
+cat("RMSE (forecasts vs actual)\n")
+preds_1h %>%
+  as.data.frame() %>%
+  select(-load_mw) %>%
+  sapply(function(x) DescTools::RMSE(x, preds_1h$load_mw)) %>%
+  .[order(.)]
+
+cat("\nMAPE (forecasts vs actual)\n")
+preds_1h %>%
+  as.data.frame() %>%
+  select(-load_mw) %>%
+  sapply(function(x) DescTools::MAPE(x, preds_1h$load_mw)) %>%
+  .[order(.)]
+```
+
+### By month
+
+```{r}
+monthly_errors_1h <- preds_1h %>%
+  fortify.zoo() %>%
+  group_by(month = month(Index)) %>%
+  summarize(
+    RMSE_nn = DescTools::RMSE(load_mw, nn),
+    RMSE_sarimax = DescTools::RMSE(load_mw, sarimax),
+    RMSE_tree = DescTools::RMSE(load_mw, tree),
+    RMSE_nn_sarimax = DescTools::RMSE(load_mw, nn_sarimax),
+    RMSE_rw = DescTools::RMSE(load_mw, rw),
+    MAPE_nn = DescTools::MAPE(load_mw, nn),
+    MAPE_sarimax = DescTools::MAPE(load_mw, sarimax),
+    MAPE_tree = DescTools::MAPE(load_mw, tree),
+    MAPE_nn_sarimax = DescTools::MAPE(load_mw, nn_sarimax),
+    MAPE_rw = DescTools::MAPE(load_mw, rw)
+  )
+monthly_errors_1h
+# Mean values
+sapply(monthly_errors_1h, function(x) round(mean(x), 5))
+
+monthly_errors_1h_long <- monthly_errors_1h %>%
+  pivot_longer(
+    cols = any_of(setdiff(colnames(monthly_errors_1h), "month")),
+    names_to = "Method",
+    values_to = "Error"
+  )
+
+monthly_errors_1h_long[grep("RMSE_[^rw]+", monthly_errors_1h_long$Method), ] %>%
+  ggplot(aes(x = factor(month), y = Error, group = Method, color = Method, shape = Method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2.5) +
+  # geom_bar(stat = "identity", position = position_dodge()) +
+  ggtitle("RMSE by month") +
+  theme_bw() +
+  scale_color_jama()
+  
+  
+
+monthly_errors_1h_long[grep("MAPE_[^rw]+", monthly_errors_1h_long$Method), ] %>%
+  ggplot(aes(x = factor(month), y = Error, group = Method, color = Method, shape = Method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2.5) +
+  # geom_bar(stat = "identity", position = position_dodge()) +
+  ggtitle("MAPE by month") +
+  theme_bw() +
+  scale_color_jama()
+  
+```
+
+### Hour of day (0 to 23)
+
+This might not be a valid way to look at the results as it does not consider the sequential structure of forecasts. For instance, forecasts at hour 15:00 are coupled together despite having no direct sequential relationship.
+
+```{r}
+hourly_errors <- preds_1h %>%
+  fortify.zoo() %>%
+  group_by(hour = hour(Index)) %>%
+  summarize(
+    RMSE_nn = DescTools::RMSE(load_mw, nn),
+    RMSE_sarimax = DescTools::RMSE(load_mw, sarimax),
+    RMSE_tree = DescTools::RMSE(load_mw, tree),
+    # RMSE_rw = DescTools::RMSE(load_mw, rw),
+    RMSE_nn_sarimax = DescTools::RMSE(load_mw, nn_sarimax),
+    MAPE_nn = DescTools::MAPE(load_mw, nn),
+    MAPE_sarimax = DescTools::MAPE(load_mw, sarimax),
+    MAPE_tree = DescTools::MAPE(load_mw, tree),
+    # MAPE_rw = DescTools::MAPE(load_mw, rw),
+    MAPE_nn_sarimax = DescTools::MAPE(load_mw, nn_sarimax)
+  )
+hourly_errors
+# Mean values
+sapply(hourly_errors, function(x) round(mean(x), 5))
+
+hourly_errors_long <- hourly_errors %>%
+  pivot_longer(
+    cols = any_of(setdiff(colnames(hourly_errors), "hour")),
+    names_to = "Method",
+    values_to = "Error"
+  )
+
+hourly_errors_long[grep("RMSE_*", hourly_errors_long$Method), ] %>%
+  ggplot(aes(x = factor(hour), y = Error, group = Method, color = Method, shape = Method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2.5) +
+  # geom_bar(stat = "identity", position = position_dodge()) +
+  ggtitle("RMSE by month by hour of day") +
+  theme_bw() +
+  scale_color_jama()
+
+hourly_errors_long[grep("MAPE_*", hourly_errors_long$Method), ] %>%
+  ggplot(aes(x = factor(hour), y = Error, group = Method, color = Method, shape = Method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2.5) +
+  # geom_bar(stat = "identity", position = position_dodge()) +
+  ggtitle("MAPE by hour of day") +
+  theme_bw() +
+  scale_color_jama()
+```
+
+DM tests with Bonferroni correction
+
+```{r}
+errors_1h <- rep(preds_1h$load_mw, 5) - preds_1h[, c("nn", "sarimax", "tree", "rw", "nn_sarimax")]
+
+dm_ps1 <- data.frame(matrix(nrow = 5, ncol = 5))
+colnames(dm_ps1) <- colnames(errors_1h)
+rownames(dm_ps1) <- colnames(errors_1h)
+dm_ps2 <- dm_ps1
+
+for (i in 1:nrow(dm_ps1)) {
+  for (j in 1:ncol(dm_ps1)) {
+    if (colnames(dm_ps1)[i] == rownames(dm_ps1)[j]) {
+      dm_ps1[i, j] <- NA
+      dm_ps2[i, j] <- NA
+      next
+    }
+    dm_ps1[i, j] <- dm.test(
+      as.numeric(errors_1h[, i]),
+      as.numeric(errors_1h[, j]),
+      # Alt hypothesis is that method 2 is less accurate than method 1
+      alternative = "less",
+      power = 1
+    )$p.value
+    dm_ps2[i, j] <- dm.test(
+      as.numeric(errors_1h[, i]),
+      as.numeric(errors_1h[, j]),
+      # Alt hypothesis is that method 2 is less accurate than method 1
+      alternative = "less",
+      power = 2
+    )$p.value
+  }
+}
+dm_ps1
+dm_ps2
+
+# James et al. (2021) page 565 - Bonferroni correction
+# Alt: Column method's forecasts are less accurate than row method's forecasts
+dm_ps1 < 0.05 / 20
+dm_ps2 < 0.05 / 20
+
+```
+
+
+
+## 48-hour-ahead analysis
+
+
+### Total errors
+
+```{r}
+cat("RMSE (forecasts vs actual)\n")
+preds_48h %>%
+  as.data.frame() %>%
+  select(-load_mw) %>%
+  sapply(function(x) DescTools::RMSE(x, preds_48h$load_mw)) %>%
+  .[order(.)]
+
+cat("\nMAPE (forecasts vs actual)\n")
+preds_48h %>%
+  as.data.frame() %>%
+  select(-load_mw) %>%
+  sapply(function(x) DescTools::MAPE(x, preds_48h$load_mw)) %>%
+  .[order(.)]
+```
+
+
+### By month
+
+```{r}
+monthly_errors_48h <- preds_48h %>%
+  fortify.zoo() %>%
+  group_by(month = month(Index)) %>%
+  summarize(
+    RMSE_ofic = DescTools::RMSE(load_mw, ofic),
+    RMSE_nn = DescTools::RMSE(load_mw, nn),
+    RMSE_sarimax = DescTools::RMSE(load_mw, sarimax),
+    RMSE_snaive = DescTools::RMSE(load_mw, snaive),
+    MAPE_ofic = DescTools::MAPE(load_mw, ofic),
+    MAPE_nn = DescTools::MAPE(load_mw, nn),
+    MAPE_sarimax = DescTools::MAPE(load_mw, sarimax),
+    MAPE_snaive = DescTools::MAPE(load_mw, snaive)
+  )
+monthly_errors_48h
+
+monthly_errors_48h_long <- monthly_errors_48h %>%
+  pivot_longer(
+    cols = any_of(setdiff(colnames(monthly_errors_48h), "month")),
+    names_to = "Method",
+    values_to = "Error"
+  )
+
+monthly_errors_48h_long[grep("RMSE_*", monthly_errors_48h_long$Method), ] %>%
+  ggplot(aes(x = factor(month), y = Error, group = Method, color = Method, shape = Method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 3) +
+  # geom_bar(stat = "identity", position = position_dodge()) +
+  ggtitle("RMSE by month") +
+  theme_bw() +
+  coord_cartesian(ylim = c(150, 600)) +
+  scale_color_manual(
+    values = c(
+      "RMSE_ofic" = "#B24745",
+      "RMSE_nn" = "#0F213E",
+      "RMSE_sarimax" = "#DF8F44",
+      "RMSE_snaive" = "#00B0B0"
+      )
+    ) +
+  scale_shape_manual(
+    values = c(
+      "RMSE_ofic" = 17,
+      "RMSE_nn" = 1,
+      "RMSE_sarimax" = 0,
+      "RMSE_snaive" = 18
+    )
+  )
+
+
+monthly_errors_48h_long[grep("MAPE_*", monthly_errors_48h_long$Method), ] %>%
+  ggplot(aes(x = factor(month), y = Error, group = Method, color = Method, shape = Method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 3) +
+  # geom_bar(stat = "identity", position = position_dodge()) +
+  ggtitle("MAPE by month") +
+  theme_bw() +
+  coord_cartesian(ylim = c(0.015, 0.06)) +
+  scale_color_manual(
+    values = c(
+      "MAPE_ofic" = "#B24745",
+      "MAPE_nn" = "#0F213E",
+      "MAPE_sarimax" = "#DF8F44",
+      "MAPE_snaive" = "#00B0B0"
+      )
+    ) +
+  scale_shape_manual(
+    values = c(
+      "MAPE_ofic" = 17,
+      "MAPE_nn" = 1,
+      "MAPE_sarimax" = 0,
+      "MAPE_snaive" = 18
+    )
+  )
+```
+
+### By month, weekdays only
+
+```{r}
+monthly_errors2 <- preds_48h %>%
+  merge(working_days) %>%
+  fortify.zoo() %>%
+  filter(wknd_or_h != 1) %>%
+  group_by(month = month(Index)) %>%
+  summarize(
+    RMSE_ofic = DescTools::RMSE(load_mw, ofic),
+    RMSE_nn = DescTools::RMSE(load_mw, nn),
+    RMSE_sarimax = DescTools::RMSE(load_mw, sarimax),
+    RMSE_snaive = DescTools::RMSE(load_mw, snaive),
+    MAPE_ofic = DescTools::MAPE(load_mw, ofic),
+    MAPE_nn = DescTools::MAPE(load_mw, nn),
+    MAPE_sarimax = DescTools::MAPE(load_mw, sarimax),
+    MAPE_snaive = DescTools::MAPE(load_mw, snaive)
+  )
+
+monthly_errors2_long <- monthly_errors2 %>%
+  pivot_longer(
+    cols = any_of(setdiff(colnames(monthly_errors2), "month")),
+    names_to = "Method",
+    values_to = "Error"
+  )
+
+monthly_errors2_long[grep("RMSE_*", monthly_errors2_long$Method), ] %>%
+  ggplot(aes(x = factor(month), y = Error, group = Method, color = Method, shape = Method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 3) +
+  # geom_bar(stat = "identity", position = position_dodge()) +
+  ggtitle("RMSE by month") +
+  theme_bw() +
+  coord_cartesian(ylim = c(150, 600)) +
+  scale_color_manual(
+    values = c(
+      "RMSE_ofic" = "#B24745",
+      "RMSE_nn" = "#0F213E",
+      "RMSE_sarimax" = "#DF8F44",
+      "RMSE_snaive" = "#00B0B0"
+      )
+    ) +
+  scale_shape_manual(
+    values = c(
+      "RMSE_ofic" = 17,
+      "RMSE_nn" = 1,
+      "RMSE_sarimax" = 0,
+      "RMSE_snaive" = 18
+    )
+  )
+
+monthly_errors2_long[grep("MAPE_*", monthly_errors2_long$Method), ] %>%
+  ggplot(aes(x = factor(month), y = Error, group = Method, color = Method, shape = Method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 3) +
+  # geom_bar(stat = "identity", position = position_dodge()) +
+  ggtitle("MAPE by month") +
+  theme_bw() +
+  coord_cartesian(ylim = c(0.015, 0.06)) +
+  scale_color_manual(
+    values = c(
+      "MAPE_ofic" = "#B24745",
+      "MAPE_nn" = "#0F213E",
+      "MAPE_sarimax" = "#DF8F44",
+      "MAPE_snaive" = "#00B0B0"
+      )
+    ) +
+  scale_shape_manual(
+    values = c(
+      "MAPE_ofic" = 17,
+      "MAPE_nn" = 1,
+      "MAPE_sarimax" = 0,
+      "MAPE_snaive" = 18
+    )
+  )
+```
+
+
+### By month, hybrids
+
+Create hybrids
+
+```{r}
+preds_48h$nn_sarimax <- with(preds_48h, (nn + sarimax) * 0.5)
+preds_48h$nn_ofic <- with(preds_48h, (nn + ofic) * 0.5)
+preds_48h$sarimax_ofic <- with(preds_48h, (ofic + sarimax) * 0.5)
+
+cat("RMSE (forecasts vs actual)\n")
+preds_48h %>%
+  as.data.frame() %>%
+  select(-load_mw) %>%
+  sapply(function(x) DescTools::RMSE(x, preds_48h$load_mw)) %>%
+  .[order(.)]
+
+cat("\nMAPE (forecasts vs actual)\n")
+preds_48h %>%
+  as.data.frame() %>%
+  select(-load_mw) %>%
+  sapply(function(x) DescTools::MAPE(x, preds_48h$load_mw)) %>%
+  .[order(.)]
+```
+
+```{r}
+monthly_errors_48h_hyb <- preds_48h %>%
+  fortify.zoo() %>%
+  group_by(month = month(Index)) %>%
+  summarize(
+    RMSE_ofic = DescTools::RMSE(load_mw, ofic),
+    RMSE_nn_sarimax = DescTools::RMSE(load_mw, nn_sarimax),
+    RMSE_nn_ofic = DescTools::RMSE(load_mw, nn_ofic),
+    RMSE_sarimax_ofic = DescTools::RMSE(load_mw, sarimax_ofic),
+    MAPE_ofic = DescTools::MAPE(load_mw, ofic),
+    MAPE_nn_sarimax = DescTools::MAPE(load_mw, nn_sarimax),
+    MAPE_nn_ofic = DescTools::MAPE(load_mw, nn_ofic),
+    MAPE_sarimax_ofic = DescTools::MAPE(load_mw, sarimax_ofic)
+  )
+monthly_errors_48h_hyb
+
+monthly_errors_48h_hyb_long <- monthly_errors_48h_hyb %>%
+  pivot_longer(
+    cols = any_of(setdiff(colnames(monthly_errors_48h_hyb), "month")),
+    names_to = "Method",
+    values_to = "Error"
+  )
+
+monthly_errors_48h_hyb_long[grep("RMSE_*", monthly_errors_48h_hyb_long$Method), ] %>%
+  ggplot(aes(x = factor(month), y = Error, group = Method, color = Method, shape = Method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 3) +
+  # geom_bar(stat = "identity", position = position_dodge()) +
+  ggtitle("RMSE by month") +
+  theme_bw() +
+  # coord_cartesian(ylim = c(150, 800)) +
+  scale_color_manual(
+    values = c(
+      "RMSE_ofic" = "#B24745",
+      "RMSE_sarimax_ofic" = "#00A1D5",
+      "RMSE_nn_ofic" = "#79AF97",
+      "RMSE_nn_sarimax" = "#6A6599"
+      )
+    ) +
+  scale_shape_manual(
+    values = c(
+      "RMSE_ofic" = 17,
+      "RMSE_sarimax_ofic" = 15,
+      "RMSE_nn_ofic" = 16,
+      "RMSE_nn_sarimax" = 2
+    )
+  )
+
+monthly_errors_48h_hyb_long[grep("MAPE_*", monthly_errors_48h_hyb_long$Method), ] %>%
+  ggplot(aes(x = factor(month), y = Error, group = Method, color = Method, shape = Method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2.5) +
+  # geom_bar(stat = "identity", position = position_dodge()) +
+  ggtitle("MAPE by month") +
+  theme_bw() +
+  # coord_cartesian(ylim = c(0.015, 0.08)) +
+  scale_color_manual(
+    values = c(
+      "MAPE_ofic" = "#B24745",
+      "MAPE_sarimax_ofic" = "#00A1D5",
+      "MAPE_nn_ofic" = "#79AF97",
+      "MAPE_nn_sarimax" = "#6A6599"
+      )
+    ) +
+  scale_shape_manual(
+    values = c(
+      "MAPE_ofic" = 17,
+      "MAPE_sarimax_ofic" = 15,
+      "MAPE_nn_ofic" = 16,
+      "MAPE_nn_sarimax" = 2
+    )
+  )
+```
+
+Total RMSE and MAPE for working days
+
+```{r}
+preds_48h %>%
+  merge(working_days) %>%
+  fortify.zoo() %>%
+  filter(wknd_or_h != 1) %>%
+  summarize(
+    RMSE_ofic = DescTools::RMSE(load_mw, ofic),
+    RMSE_nn_sarimax = DescTools::RMSE(load_mw, nn_sarimax),
+    MAPE_ofic = DescTools::MAPE(load_mw, ofic),
+    MAPE_nn_sarimax = DescTools::MAPE(load_mw, nn_sarimax),
+  )
+```
+
+
+```{r}
+cat("RMSE (forecasts vs actual)\n")
+preds_48h %>%
+  as.data.frame() %>%
+  select(-load_mw) %>%
+  sapply(function(x) DescTools::RMSE(x, preds_48h$load_mw)) %>%
+  .[order(.)]
+
+cat("\nMAPE (forecasts vs actual)\n")
+preds_48h %>%
+  as.data.frame() %>%
+  select(-load_mw) %>%
+  sapply(function(x) DescTools::MAPE(x, preds_48h$load_mw)) %>%
+  .[order(.)]
+```
+
+Multiple step forecast comparison
+
+```{r}
+# Following https://stats.stackexchange.com/q/515534
+errors_abs <- preds_48h %>%
+  as.data.frame() %>%
+  sapply(function(x) x - .$load_mw) %>%
+  as.data.frame() %>%
+  select(-load_mw) %>%
+  abs()
+
+nemenyi(errors_abs, plottype = "vmcb", conf.level = 0.99, axes = F)
+axis(side = 1, at = seq(3, 5.25, length = 10))
+```
+
+
+
+
+## Sample plots
+
+```{r}
+preds_1_plot <- preds_1h[, c("load_mw", "nn_sarimax")]
+
+for (
+  timespan in c(
+    "2021-02-03/2021-02-06",
+    "2021-06-13/2021-06-16",
+    "2021-10-26/2021-10-29",
+    "2021-12-23/2021-12-26"
+)) {
+  p <- autoplot(preds_1_plot[timespan], facets = NULL) + theme_bw()
+  print(p)
+}
+
+
+```
+
+```{r}
+preds_48_plot <- preds_48h#[, c("load_mw", "ofic", "nn_sarimax", "nn_ofic", "sarimax_ofic")]
+
+for (
+  timespan in c(
+    "2021-02-03/2021-02-06",
+    "2021-06-13/2021-06-16",
+    "2021-10-26/2021-10-29",
+    "2021-12-23/2021-12-26"
+)) {
+  p <- autoplot(preds_48_plot[timespan], facets = NULL) + theme_bw()
+  print(p)
+}
+```
