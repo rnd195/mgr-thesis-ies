@@ -4,7 +4,7 @@ Author: Martin Řanda
 
 Year: 2023
 
-Supervisor: [prof. PhDr. Ladislav Krištoufek Ph.D.](https://ies.fsv.cuni.cz/cs/staff/kristoufek)
+Supervisor: [prof. PhDr. Ladislav Krištoufek Ph.D.](https://ies.fsv.cuni.cz/contacts/people/17152303)
 
 
 
