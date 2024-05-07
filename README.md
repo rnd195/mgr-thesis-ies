@@ -6,7 +6,9 @@ Year: 2023
 
 Supervisor: [prof. PhDr. Ladislav Krištoufek Ph.D.](https://ies.fsv.cuni.cz/contacts/people/17152303)
 
+Official link to the thesis: <https://dspace.cuni.cz/handle/20.500.11956/182541?locale-attribute=en>
 
+---
 
 This repository contains data and code for the modeling part of my Master's thesis at [IES FSV CUNI](https://ies.fsv.cuni.cz/). Raw data and code for the exploratory analysis are available upon request. Link to the thesis will be supplied once it is defended and published.
 
